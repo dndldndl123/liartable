@@ -472,11 +472,23 @@ function createRoom(tries){
   });
 }
 
+let lastJoin = null;
 function joinRoom(){
   const n = getName(); if (!n) return;
   const c = (document.getElementById('code').value||'').toUpperCase().replace(/[^A-Z]/g,'');
   if (c.length!==4){ setNote('방 코드 4글자를 입력해 주세요.', true); return; }
   setNote('방에 들어가는 중…');
+  joinWith(n, c);
+}
+function retryJoin(){
+  if (!lastJoin) { leave(); return; }
+  try { if (hostConn) hostConn.close(); } catch(e){}
+  try { if (peer) peer.destroy(); } catch(e){}
+  peer=null; hostConn=null; mode=null; G=null; hostGone='trying'; render();
+  joinWith(lastJoin.n, lastJoin.c);
+}
+function joinWith(n, c){
+  lastJoin = {n, c};
   const pr = makePeer();
   let opened = false;
   pr.on('open', id=>{
@@ -489,7 +501,8 @@ function joinRoom(){
     render();
     const conn = pr.connect(ID_PREFIX + c, {reliable:true});
     hostConn = conn;
-    conn.on('open', ()=>{ conn.send({type:'hello', nm:n}); });
+    let connOpened = false;
+    conn.on('open', ()=>{ connOpened = true; conn.send({type:'hello', nm:n}); });
     conn.on('data', d=>{
       if (!d || typeof d!=='object') return;
       if (d.type==='state' && d.g && Array.isArray(d.g.pl)){
@@ -501,11 +514,11 @@ function joinRoom(){
       }
     });
     conn.on('close', ()=>{ if (mode==='client' && hostConn===conn){ hostGone = G ? 'left' : 'nohost'; render(); } });
-    setTimeout(()=>{ if (mode==='client' && hostConn===conn && !G && screen==='game'){ hostGone='nohost'; render(); } }, 9000);
+    setTimeout(()=>{ if (mode==='client' && hostConn===conn && !G && screen==='game' && hostGone!=='nohost'){ hostGone = connOpened ? 'nostate' : 'noconn'; render(); } }, 15000);
   });
   pr.on('disconnected', ()=>{ try{ pr.reconnect(); }catch(e){} });
   pr.on('error', e=>{
-    if (!opened){ try{ pr.destroy(); }catch(_){} setNote('서버에 연결할 수 없어요. 인터넷 연결을 확인해 주세요.', true); return; }
+    if (!opened){ try{ pr.destroy(); }catch(_){} if (screen==='home') setNote('서버에 연결할 수 없어요. 인터넷 연결을 확인해 주세요.', true); else { hostGone='noserver'; render(); } return; }
     if (e && e.type==='peer-unavailable' && mode==='client' && !G){ hostGone='nohost'; render(); }
   });
 }
@@ -699,7 +712,12 @@ function topbar(){
 
 function gameHTML(){
   let h = topbar();
-  if (hostGone==='nohost') return h + `<div class="center panel">코드 <b>${esc(code)}</b> 방을 찾지 못했어요.<br>코드를 다시 확인하거나, 방장이 방을 열어 두었는지 물어보세요.<br><br><button class="btn primary" data-a="leave">처음으로</button></div>`;
+  const btns = `<br><br><div class="ctrl"><button class="btn primary" data-a="retry">다시 시도</button><button class="btn" data-a="leave">처음으로</button></div>`;
+  if (hostGone==='trying') return h + `<div class="center">다시 연결하는 중…</div>`;
+  if (hostGone==='nohost') return h + `<div class="center panel"><b>${esc(code||(lastJoin&&lastJoin.c)||'')}</b> 방이 없어요.<br><br>· 코드를 다시 확인해 주세요 (대문자 4글자)<br>· 방장이 <b>같은 사이트 주소</b>에서 방을 만들었는지 확인해 주세요<br>· 방장이 방 화면을 닫지 않고 켜 두어야 해요${btns}</div>`;
+  if (hostGone==='noconn') return h + `<div class="center panel">방은 찾았는데 <b>연결이 안 돼요.</b><br><br>네트워크가 기기끼리 직접 연결을 막고 있을 수 있어요.<br>· 와이파이 ↔ 모바일 데이터로 바꿔서 다시 시도해 보세요<br>· 학교·회사 와이파이는 막혀 있는 경우가 많아요${btns}</div>`;
+  if (hostGone==='nostate') return h + `<div class="center panel">방장과 연결은 됐는데 응답이 없어요.<br>방장 화면이 켜져 있는지 확인해 주세요.${btns}</div>`;
+  if (hostGone==='noserver') return h + `<div class="center panel">연결 서버에 접속하지 못했어요.<br>인터넷 연결을 확인해 주세요.${btns}</div>`;
   if (hostGone==='left') return h + `<div class="center panel">방장이 나가서 게임이 끝났어요.<br><br><button class="btn primary" data-a="leave">처음으로</button></div>`;
   if (!G) return h + `<div class="center">방장과 연결하는 중…</div>`;
   if (G.ph==='lobby') return h + lobbyHTML();
@@ -886,6 +904,7 @@ app.addEventListener('click', e=>{
   else if (a==='start'){ if (G.pl.length>=2) startGame(); }
   else if (a==='again'){ clearTimers(); G.ph='lobby'; G.lp=null; G.rv=null; G.sh=null; G.tc=null; G.pile=0; refreshLobby(true); }
   else if (a==='leave') leave();
+  else if (a==='retry') retryJoin();
   else if (a==='rules') showRules();
   else if (a==='copy'){ try { navigator.clipboard.writeText(code).then(()=>{ t.textContent='복사됨!'; }, ()=>{}); } catch(err){} }
 });
